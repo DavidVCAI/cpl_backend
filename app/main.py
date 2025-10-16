@@ -1,0 +1,389 @@
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+from datetime import datetime
+import logging
+
+from app.config import settings
+from app.database import get_database, close_database
+from app.routes import users, events, collectibles
+from app.websockets.manager import ConnectionManager
+from app.services.collectible_service import CollectibleService
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from bson import ObjectId
+
+# Logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# WebSocket Connection Manager
+manager = ConnectionManager()
+
+# Scheduler for background tasks
+scheduler = AsyncIOScheduler()
+
+
+# Lifespan context manager
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown events"""
+    # Startup
+    logger.info("🚀 Starting CityPulse Live API...")
+
+    # Initialize database
+    await get_database()
+    logger.info("✅ Database connected")
+
+    # Start background tasks
+    scheduler.start()
+    logger.info("✅ Scheduler started")
+
+    # Schedule collectible drops (every 5 minutes)
+    scheduler.add_job(
+        drop_random_collectibles,
+        'interval',
+        seconds=settings.COLLECTIBLE_DROP_INTERVAL,
+        id='collectible_dropper'
+    )
+
+    # Schedule expired collectibles cleanup (every minute)
+    scheduler.add_job(
+        cleanup_expired_collectibles,
+        'interval',
+        seconds=60,
+        id='collectible_cleaner'
+    )
+
+    yield
+
+    # Shutdown
+    logger.info("🛑 Shutting down CityPulse Live API...")
+    scheduler.shutdown()
+    await close_database()
+    logger.info("✅ Database closed")
+
+
+# Initialize FastAPI app
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.API_VERSION,
+    description="Real-time civic engagement platform for Bogotá - MVP",
+    lifespan=lifespan
+)
+
+# CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS.split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(users.router, prefix="/api/users", tags=["Users"])
+app.include_router(events.router, prefix="/api/events", tags=["Events"])
+app.include_router(collectibles.router, prefix="/api/collectibles", tags=["Collectibles"])
+
+
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "app": settings.APP_NAME,
+        "version": settings.API_VERSION,
+        "status": "running",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# Health check
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "database": "connected",
+        "websocket_stats": manager.get_stats(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ========================================
+# WebSocket Endpoints
+# ========================================
+
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    """
+    Main WebSocket endpoint for real-time communication
+
+    Handles:
+    - Location updates
+    - Event updates
+    - Collectible drops
+    - Chat messages
+    """
+    await manager.connect(websocket, user_id)
+    logger.info(f"✅ User {user_id} connected via WebSocket")
+
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_json()
+            message_type = data.get("type")
+
+            if message_type == "location_update":
+                await handle_location_update(user_id, data)
+
+            elif message_type == "join_event":
+                await handle_join_event(user_id, data)
+
+            elif message_type == "leave_event":
+                await handle_leave_event(user_id, data)
+
+            elif message_type == "chat_message":
+                await handle_chat_message(user_id, data)
+
+            elif message_type == "claim_collectible":
+                await handle_claim_collectible(user_id, data)
+
+            else:
+                logger.warning(f"Unknown message type: {message_type}")
+
+    except WebSocketDisconnect:
+        manager.disconnect(user_id)
+        logger.info(f"❌ User {user_id} disconnected")
+
+        # Notify others about disconnection
+        await manager.broadcast({
+            "type": "user_disconnected",
+            "user_id": user_id,
+            "timestamp": datetime.now().isoformat()
+        })
+
+
+# ========================================
+# WebSocket Message Handlers
+# ========================================
+
+async def handle_location_update(user_id: str, data: dict):
+    """Handle real-time location updates"""
+    coordinates = data.get("coordinates")  # [lng, lat]
+
+    if not coordinates:
+        return
+
+    # Update user location in database
+    db = await get_database()
+    await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "current_location": {
+                    "type": "Point",
+                    "coordinates": coordinates
+                },
+                "updated_at": datetime.now()
+            }
+        }
+    )
+
+    # Update in-memory location
+    manager.update_user_location(user_id, coordinates)
+
+    # Find nearby events (within 5km)
+    nearby_events = await db.events.find({
+        "location": {
+            "$near": {
+                "$geometry": {
+                    "type": "Point",
+                    "coordinates": coordinates
+                },
+                "$maxDistance": 5000  # 5km
+            }
+        },
+        "status": "active"
+    }).to_list(20)
+
+    # Convert ObjectIds to strings
+    for event in nearby_events:
+        event["_id"] = str(event["_id"])
+        event["creator_id"] = str(event["creator_id"])
+
+    # Send nearby events to user
+    await manager.send_personal_message(user_id, {
+        "type": "nearby_events",
+        "events": nearby_events,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+async def handle_join_event(user_id: str, data: dict):
+    """Handle user joining an event"""
+    event_id = data.get("event_id")
+
+    db = await get_database()
+
+    # Update event participants
+    await db.events.update_one(
+        {"_id": ObjectId(event_id)},
+        {
+            "$push": {
+                "participants": {
+                    "user_id": user_id,
+                    "joined_at": datetime.now(),
+                    "is_active": True
+                }
+            },
+            "$inc": {"room.current_participants": 1}
+        }
+    )
+
+    # Update user stats
+    await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$inc": {"stats.events_attended": 1}}
+    )
+
+    # Join event in connection manager
+    manager.join_event(user_id, event_id)
+
+    # Broadcast to all users in event
+    await manager.broadcast_to_event(event_id, {
+        "type": "user_joined",
+        "user_id": user_id,
+        "event_id": event_id,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+async def handle_leave_event(user_id: str, data: dict):
+    """Handle user leaving an event"""
+    event_id = data.get("event_id")
+
+    db = await get_database()
+
+    # Update event participants
+    await db.events.update_one(
+        {"_id": ObjectId(event_id)},
+        {
+            "$pull": {
+                "participants": {"user_id": user_id}
+            },
+            "$inc": {"room.current_participants": -1}
+        }
+    )
+
+    # Leave event in connection manager
+    manager.leave_event(user_id, event_id)
+
+    # Broadcast to all users in event
+    await manager.broadcast_to_event(event_id, {
+        "type": "user_left",
+        "user_id": user_id,
+        "event_id": event_id,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+async def handle_chat_message(user_id: str, data: dict):
+    """Handle chat messages in event"""
+    event_id = data.get("event_id")
+    message = data.get("message")
+
+    # Broadcast message to event participants
+    await manager.broadcast_to_event(event_id, {
+        "type": "chat_message",
+        "user_id": user_id,
+        "message": message,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+async def handle_claim_collectible(user_id: str, data: dict):
+    """Handle collectible claim attempt"""
+    collectible_id = data.get("collectible_id")
+
+    db = await get_database()
+    collectible_service = CollectibleService(db)
+
+    # Attempt to claim (race condition handled in service)
+    result = await collectible_service.claim_collectible(collectible_id, user_id)
+
+    # Send result to user
+    await manager.send_personal_message(user_id, {
+        "type": "claim_result",
+        "result": result,
+        "timestamp": datetime.now().isoformat()
+    })
+
+    # If successful, broadcast to all
+    if result.get("success"):
+        await manager.broadcast({
+            "type": "collectible_claimed",
+            "collectible_id": collectible_id,
+            "winner_id": user_id,
+            "timestamp": datetime.now().isoformat()
+        })
+
+
+# ========================================
+# Background Tasks
+# ========================================
+
+async def drop_random_collectibles():
+    """Background task to drop collectibles in active events"""
+    logger.info("🎁 Dropping random collectibles...")
+
+    db = await get_database()
+    collectible_service = CollectibleService(db)
+
+    # Find active events with participants
+    active_events = await db.events.find({
+        "status": "active",
+        "room.current_participants": {"$gte": 3}  # At least 3 people
+    }).to_list(100)
+
+    for event in active_events:
+        # Random chance to drop (50%)
+        import random
+        if random.random() < 0.5:
+            # Drop collectible
+            collectible = await collectible_service.drop_random_collectible(
+                str(event["_id"]),
+                event["location"]["coordinates"]
+            )
+
+            # Broadcast to all participants
+            await manager.broadcast_to_event(str(event["_id"]), {
+                "type": "collectible_drop",
+                "collectible": collectible,
+                "expires_in": 30,  # seconds
+                "timestamp": datetime.now().isoformat()
+            })
+
+            logger.info(f"✅ Dropped {collectible['type']} collectible in event {event['_id']}")
+
+
+async def cleanup_expired_collectibles():
+    """Background task to clean up expired collectibles"""
+    db = await get_database()
+    collectible_service = CollectibleService(db)
+
+    expired_count = await collectible_service.expire_old_collectibles()
+
+    if expired_count > 0:
+        logger.info(f"🧹 Cleaned up {expired_count} expired collectibles")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app.main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.DEBUG
+    )

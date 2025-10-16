@@ -1,0 +1,40 @@
+# FastAPI Framework
+fastapi
+uvicorn
+python-multipart
+
+# MongoDB
+motor
+pymongo
+
+# WebSockets
+python-socketio
+python-engineio
+
+# HTTP Client
+httpx
+
+# Deepgram SDK (AI Transcription)
+deepgram-sdk
+
+# Geospatial
+geopy
+
+# CORS
+fastapi-cors
+
+# Validation
+pydantic
+
+# Background Tasks
+apscheduler
+
+# Logging
+loguru
+
+# Environment Variables
+python-decouple
+
+# Testing
+pytest
+pytest-asyncio
