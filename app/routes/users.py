@@ -68,6 +68,29 @@ async def get_user(user_id: str):
     }
 
 
+@router.post("/login", response_model=dict)
+async def login_user(user_data: UserCreate):
+    """
+    Login user by phone number (MVP: simple phone lookup)
+    """
+    db = await get_database()
+
+    # Find user by phone
+    user = await db.users.find_one({"phone": user_data.phone})
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado. Por favor regístrate primero.")
+
+    return {
+        "id": str(user["_id"]),
+        "phone": user["phone"],
+        "name": user["name"],
+        "stats": user.get("stats", {}),
+        "created_at": user["created_at"],
+        "message": "Login exitoso"
+    }
+
+
 @router.get("/{user_id}/collectibles", response_model=list)
 async def get_user_collectibles(user_id: str):
     """Get all collectibles owned by user"""
