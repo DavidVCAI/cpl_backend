@@ -2,6 +2,34 @@
 
 Real-time civic engagement platform for Bogotá - FastAPI Backend
 
+## ⭐ NEW: Real-Time Location Sync System
+
+**Sistema de sincronización de ubicación en tiempo real con garantías completas de consistencia e integridad de datos.**
+
+### Características Destacadas
+- ✅ **Cero condiciones de carrera** con `asyncio.Lock`
+- ✅ **Validación temporal** para rechazar datos antiguos
+- ✅ **Integridad de datos** garantizada
+- ✅ **Broadcasting eficiente** a todos los usuarios
+- ✅ **Reconexión automática** del cliente
+- ✅ **Búsquedas geoespaciales** optimizadas
+
+📚 **Documentación completa:**
+- [Guía Rápida](../AI/QUICK_START.md)
+- [Documentación Técnica](../AI/REAL_TIME_LOCATION_SYNC.md)
+
+### Iniciar Sistema
+```bash
+# Backend
+python scripts/init_database.py  # Crear índices
+uvicorn app.main:app --reload
+
+# Probar WebSocket
+python scripts/test_websocket.py
+```
+
+---
+
 ## 🎯 MVP Features
 
 This is a simplified MVP focusing on the core user stories:
