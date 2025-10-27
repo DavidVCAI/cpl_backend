@@ -157,16 +157,20 @@ async def join_event(event_id: str, user_id: str):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Check if user already joined
-    already_joined = any(p["user_id"] == user_id for p in event.get("participants", []))
+    # Check if user already joined (defensive check)
+    participants_list = event.get("participants", [])
+    participant_ids = [p.get("user_id") for p in participants_list]
+    already_joined = user_id in participant_ids
+
+    logger.info(f"🎫 Join attempt - User: {user_id}, Event: {event_id}, Already joined: {already_joined}, Participant IDs: {participant_ids}")
 
     if not already_joined:
-        # Atomic operation: only add participant if not already in array
-        # This prevents race conditions from reload loops
+        # Atomic operation with filter to prevent duplicates
+        # Only update if user_id is NOT already in participants array
         result = await db.events.update_one(
             {
                 "_id": ObjectId(event_id),
-                "participants.user_id": {"$ne": user_id}  # Only if user_id NOT in participants
+                "participants.user_id": {"$ne": user_id}  # Filter: user NOT in array
             },
             {
                 "$push": {
@@ -186,9 +190,11 @@ async def join_event(event_id: str, user_id: str):
             }
         )
 
-        # Update peak_participants separately (needs current value)
+        logger.info(f"✅ Join result - Modified: {result.modified_count}, Matched: {result.matched_count}")
+
+        # Only proceed if participant was actually added
         if result.modified_count > 0:
-            # Re-fetch event to get updated count
+            # Update peak_participants
             updated_event = await db.events.find_one({"_id": ObjectId(event_id)})
             if updated_event:
                 current_count = updated_event["room"]["current_participants"]
@@ -199,11 +205,15 @@ async def join_event(event_id: str, user_id: str):
                         {"$set": {"metadata.peak_participants": current_count}}
                     )
 
-            # Update user stats only if participant was actually added
+            # Update user stats
             await db.users.update_one(
                 {"_id": ObjectId(user_id)},
                 {"$inc": {"stats.events_attended": 1}}
             )
+        else:
+            logger.warning(f"⚠️ Duplicate join prevented for user {user_id} in event {event_id}")
+    else:
+        logger.warning(f"⚠️ User {user_id} already in event {event_id}, returning existing token")
 
     # Generate Daily.co meeting token
     daily_service = DailyService()
