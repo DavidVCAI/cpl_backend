@@ -226,18 +226,24 @@ async def handle_location_update(user_id: str, data: dict):
 
         # Update user location in database (async, non-blocking)
         db = await get_database()
-        await db.users.update_one(
-            {"_id": ObjectId(user_id)},
-            {
-                "$set": {
-                    "current_location": {
-                        "type": "Point",
-                        "coordinates": coordinates
-                    },
-                    "updated_at": datetime.now()
+        try:
+            result = await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {
+                    "$set": {
+                        "current_location": {
+                            "type": "Point",
+                            "coordinates": coordinates
+                        },
+                        "updated_at": datetime.now()
+                    }
                 }
-            }
-        )
+            )
+            if result.matched_count == 0:
+                logger.warning(f"User {user_id} not found in database for location update")
+        except Exception as db_error:
+            logger.error(f"Database error updating location for {user_id}: {db_error}")
+            # Continue execution even if DB update fails
 
         # Broadcast location update to all connected users
         await manager.broadcast_location_update(user_id, location, exclude_user=False)
