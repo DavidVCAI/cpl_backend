@@ -64,6 +64,7 @@ class EventCreate(BaseModel):
     title: str
     description: str
     category: str
+    creator_id: str
     coordinates: list[float] = Field(..., description="[longitude, latitude]")
     address: Optional[str] = None
 
