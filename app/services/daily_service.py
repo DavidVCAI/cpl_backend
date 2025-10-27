@@ -32,6 +32,9 @@ class DailyService:
         Returns:
             Room data including URL and name
         """
+        # Calculate expiration timestamp (4 hours from now)
+        exp_timestamp = int((datetime.now() + timedelta(hours=4)).timestamp())
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/rooms",
@@ -42,10 +45,9 @@ class DailyService:
                         "max_participants": max_participants,
                         "enable_screenshare": True,
                         "enable_chat": True,
-                        "enable_recording": "cloud" if enable_recording else "off",
                         "start_video_off": False,
                         "start_audio_off": False,
-                        "exp": 3600 * 4  # Room expires in 4 hours
+                        "exp": exp_timestamp  # Room expires in 4 hours
                     }
                 }
             )
@@ -91,7 +93,6 @@ class DailyService:
                         "user_id": user_id,
                         "is_owner": is_owner,
                         "enable_screenshare": True,
-                        "enable_recording": is_owner,
                         "start_video_off": False,
                         "start_audio_off": False,
                         "exp": int((datetime.now() + timedelta(hours=4)).timestamp())

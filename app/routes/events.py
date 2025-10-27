@@ -2,16 +2,18 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 from datetime import datetime
 from bson import ObjectId
+import logging
 
 from app.database import get_database
 from app.models.event import EventCreate, Event
 from app.services.daily_service import DailyService
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
-@router.post("/", response_model=dict, status_code=201)
-async def create_event(event_data: EventCreate, creator_id: str):
+@router.post("", response_model=dict, status_code=201)
+async def create_event(event_data: EventCreate):
     """
     Create a new event with Daily.co video room
     """
@@ -31,7 +33,7 @@ async def create_event(event_data: EventCreate, creator_id: str):
         "title": event_data.title,
         "description": event_data.description,
         "category": event_data.category,
-        "creator_id": creator_id,
+        "creator_id": event_data.creator_id,
         "location": {
             "type": "Point",
             "coordinates": event_data.coordinates,
@@ -64,7 +66,7 @@ async def create_event(event_data: EventCreate, creator_id: str):
 
     # Update user stats
     await db.users.update_one(
-        {"_id": ObjectId(creator_id)},
+        {"_id": ObjectId(event_data.creator_id)},
         {"$inc": {"stats.events_created": 1}}
     )
 
@@ -101,10 +103,11 @@ async def get_nearby_events(lng: float, lat: float, max_distance: int = 5000):
         "status": "active"
     }).to_list(20)
 
-    # Convert ObjectId to string
+    # Convert ObjectId to string and map _id to id
     for event in events:
-        event["_id"] = str(event["_id"])
+        event["id"] = str(event["_id"])
         event["creator_id"] = str(event["creator_id"])
+        del event["_id"]  # Remove _id field
 
     return events
 
@@ -122,8 +125,9 @@ async def get_event(event_id: str):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    event["_id"] = str(event["_id"])
+    event["id"] = str(event["_id"])
     event["creator_id"] = str(event["creator_id"])
+    del event["_id"]  # Remove _id field
 
     return event
 
@@ -169,7 +173,7 @@ async def join_event(event_id: str, user_id: str):
 
 @router.post("/{event_id}/end", response_model=dict)
 async def end_event(event_id: str, creator_id: str):
-    """End an event"""
+    """End an event and delete the Daily.co room"""
     db = await get_database()
 
     try:
@@ -182,6 +186,18 @@ async def end_event(event_id: str, creator_id: str):
 
     if str(event["creator_id"]) != creator_id:
         raise HTTPException(status_code=403, detail="Only the creator can end the event")
+
+    # Delete Daily.co room to save resources
+    daily_service = DailyService()
+    room_name = event.get("room", {}).get("daily_room_name")
+
+    if room_name:
+        try:
+            await daily_service.delete_room(room_name)
+            logger.info(f"✅ Deleted Daily.co room: {room_name}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to delete Daily.co room {room_name}: {str(e)}")
+            # Continue even if room deletion fails
 
     # Update event status
     await db.events.update_one(
