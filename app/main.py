@@ -6,7 +6,7 @@ import logging
 
 from app.config import settings
 from app.database import get_database, close_database
-from app.routes import users, events, collectibles
+from app.routes import users, events, collectibles, transcription
 from app.websockets.manager import ConnectionManager
 from app.services.collectible_service import CollectibleService
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -89,6 +89,7 @@ app.add_middleware(
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(events.router, prefix="/api/events", tags=["Events"])
 app.include_router(collectibles.router, prefix="/api/collectibles", tags=["Collectibles"])
+app.include_router(transcription.router, prefix="/api/transcription", tags=["Transcription"])
 
 
 # Root endpoint
