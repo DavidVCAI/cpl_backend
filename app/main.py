@@ -113,7 +113,30 @@ async def health_check():
     return {
         "status": "healthy",
         "database": "connected",
-        "websocket_stats": manager.get_stats(),
+        "websocket_stats": await manager.get_stats(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# Get all active user locations
+@app.get("/api/locations")
+async def get_all_locations():
+    """Get all active user locations"""
+    locations = await manager.get_all_locations()
+    
+    return {
+        "locations": [
+            {
+                "user_id": user_id,
+                "coordinates": list(loc.coordinates),
+                "timestamp": loc.timestamp.isoformat(),
+                "accuracy": loc.accuracy,
+                "speed": loc.speed,
+                "heading": loc.heading
+            }
+            for user_id, loc in locations.items()
+        ],
+        "total": len(locations),
         "timestamp": datetime.now().isoformat()
     }
 
@@ -161,7 +184,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 logger.warning(f"Unknown message type: {message_type}")
 
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
+        await manager.disconnect(user_id)
         logger.info(f"❌ User {user_id} disconnected")
 
         # Notify others about disconnection
@@ -170,6 +193,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             "user_id": user_id,
             "timestamp": datetime.now().isoformat()
         })
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user_id}: {e}")
+        await manager.disconnect(user_id)
 
 
 # ========================================
@@ -177,59 +203,98 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 # ========================================
 
 async def handle_location_update(user_id: str, data: dict):
-    """Handle real-time location updates"""
+    """Handle real-time location updates with data consistency"""
     coordinates = data.get("coordinates")  # [lng, lat]
+    accuracy = data.get("accuracy")
+    speed = data.get("speed")
+    heading = data.get("heading")
 
-    if not coordinates:
+    if not coordinates or len(coordinates) != 2:
+        logger.warning(f"Invalid coordinates from {user_id}: {coordinates}")
         return
 
-    # Update user location in database
-    db = await get_database()
-    await db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {
-            "$set": {
-                "current_location": {
-                    "type": "Point",
-                    "coordinates": coordinates
-                },
-                "updated_at": datetime.now()
+    try:
+        # Validate coordinates
+        lng, lat = coordinates
+        if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+            logger.warning(f"Coordinates out of range from {user_id}: {coordinates}")
+            return
+
+        # Update in-memory location with race condition protection
+        location = await manager.update_user_location(
+            user_id, 
+            tuple(coordinates),
+            accuracy=accuracy,
+            speed=speed,
+            heading=heading
+        )
+
+        # Update user location in database (async, non-blocking)
+        db = await get_database()
+        await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "current_location": {
+                        "type": "Point",
+                        "coordinates": coordinates
+                    },
+                    "updated_at": datetime.now()
+                }
             }
-        }
-    )
+        )
 
-    # Update in-memory location
-    manager.update_user_location(user_id, coordinates)
+        # Broadcast location update to all connected users
+        await manager.broadcast_location_update(user_id, location, exclude_user=False)
 
-    # Find nearby events (within 5km)
-    nearby_events = await db.events.find({
-        "location": {
-            "$near": {
-                "$geometry": {
-                    "type": "Point",
-                    "coordinates": coordinates
-                },
-                "$maxDistance": 5000  # 5km
-            }
-        },
-        "status": "active"
-    }).to_list(20)
+        # Find nearby events (within 5km)
+        nearby_events = await db.events.find({
+            "location": {
+                "$near": {
+                    "$geometry": {
+                        "type": "Point",
+                        "coordinates": coordinates
+                    },
+                    "$maxDistance": 5000  # 5km
+                }
+            },
+            "status": "active"
+        }).to_list(20)
 
-    # Convert ObjectIds to strings
-    for event in nearby_events:
-        event["_id"] = str(event["_id"])
-        event["creator_id"] = str(event["creator_id"])
+        # Convert ObjectIds to strings
+        for event in nearby_events:
+            event["_id"] = str(event["_id"])
+            event["creator_id"] = str(event["creator_id"])
 
-    # Send nearby events to user
-    await manager.send_personal_message(user_id, {
-        "type": "nearby_events",
-        "events": nearby_events,
-        "timestamp": datetime.now().isoformat()
-    })
+        # Send nearby events to user
+        await manager.send_personal_message(user_id, {
+            "type": "nearby_events",
+            "events": nearby_events,
+            "timestamp": datetime.now().isoformat()
+        })
+
+        # Get nearby users
+        nearby_users = await manager.get_nearby_users(tuple(coordinates), radius_km=5.0)
+        
+        # Send nearby users to user (excluding themselves)
+        nearby_users = [u for u in nearby_users if u["user_id"] != user_id]
+        await manager.send_personal_message(user_id, {
+            "type": "nearby_users",
+            "users": nearby_users,
+            "timestamp": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        logger.error(f"Error handling location update for {user_id}: {e}")
+        await manager.send_personal_message(user_id, {
+            "type": "error",
+            "message": "Failed to update location",
+            "timestamp": datetime.now().isoformat()
+        })
 
 
 async def handle_join_event(user_id: str, data: dict):
-    """Handle user joining an event"""
+    """Handle user joining an event with race condition protection"""
     event_id = data.get("event_id")
 
     db = await get_database()
@@ -255,8 +320,8 @@ async def handle_join_event(user_id: str, data: dict):
         {"$inc": {"stats.events_attended": 1}}
     )
 
-    # Join event in connection manager
-    manager.join_event(user_id, event_id)
+    # Join event in connection manager with race condition protection
+    await manager.join_event(user_id, event_id)
 
     # Broadcast to all users in event
     await manager.broadcast_to_event(event_id, {
@@ -268,7 +333,7 @@ async def handle_join_event(user_id: str, data: dict):
 
 
 async def handle_leave_event(user_id: str, data: dict):
-    """Handle user leaving an event"""
+    """Handle user leaving an event with race condition protection"""
     event_id = data.get("event_id")
 
     db = await get_database()
@@ -284,8 +349,8 @@ async def handle_leave_event(user_id: str, data: dict):
         }
     )
 
-    # Leave event in connection manager
-    manager.leave_event(user_id, event_id)
+    # Leave event in connection manager with race condition protection
+    await manager.leave_event(user_id, event_id)
 
     # Broadcast to all users in event
     await manager.broadcast_to_event(event_id, {
@@ -386,11 +451,5 @@ async def cleanup_expired_collectibles():
         logger.info(f"🧹 Cleaned up {expired_count} expired collectibles")
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG
-    )
+# Para ejecutar el servidor, usar desde la terminal:
+# uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

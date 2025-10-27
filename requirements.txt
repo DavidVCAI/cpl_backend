@@ -38,3 +38,6 @@ python-decouple
 # Testing
 pytest
 pytest-asyncio
+
+# SETTINGS
+pydantic-settings
