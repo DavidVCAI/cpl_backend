@@ -11,10 +11,5 @@
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ],
-  "env": {
-    "MONGODB_URL": "@mongodb_url",
-    "DAILY_API_KEY": "@daily_api_key",
-    "DEEPGRAM_API_KEY": "@deepgram_api_key"
-  }
+  ]
 }
