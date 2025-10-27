@@ -75,19 +75,14 @@ app = FastAPI(
 )
 
 # CORS Configuration
-# For development: Allow all localhost origins
-cors_origins = settings.CORS_ORIGINS.split(",")
-if settings.DEBUG:
-    # Add regex pattern to allow any localhost port
-    cors_origins.append("http://localhost:*")
-    cors_origins.append("http://127.0.0.1:*")
-
+# Allow all origins for serverless deployment (Vercel)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.DEBUG else cors_origins,  # Allow all origins in debug mode
+    allow_origins=["*"],  # Allow all origins (required for Vercel serverless)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Include routers
