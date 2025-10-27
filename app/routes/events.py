@@ -161,12 +161,13 @@ async def join_event(event_id: str, user_id: str):
     already_joined = any(p["user_id"] == user_id for p in event.get("participants", []))
 
     if not already_joined:
-        # Add participant to event
-        current_count = event["room"]["current_participants"]
-        new_count = current_count + 1
-
-        await db.events.update_one(
-            {"_id": ObjectId(event_id)},
+        # Atomic operation: only add participant if not already in array
+        # This prevents race conditions from reload loops
+        result = await db.events.update_one(
+            {
+                "_id": ObjectId(event_id),
+                "participants.user_id": {"$ne": user_id}  # Only if user_id NOT in participants
+            },
             {
                 "$push": {
                     "participants": {
@@ -175,22 +176,34 @@ async def join_event(event_id: str, user_id: str):
                         "is_active": True
                     }
                 },
-                "$set": {
-                    "room.current_participants": new_count,
-                    "metadata.peak_participants": max(new_count, event["metadata"]["peak_participants"]),
-                    "updated_at": datetime.now(timezone.utc)
-                },
                 "$inc": {
+                    "room.current_participants": 1,
                     "metadata.views": 1
+                },
+                "$set": {
+                    "updated_at": datetime.now(timezone.utc)
                 }
             }
         )
 
-        # Update user stats
-        await db.users.update_one(
-            {"_id": ObjectId(user_id)},
-            {"$inc": {"stats.events_attended": 1}}
-        )
+        # Update peak_participants separately (needs current value)
+        if result.modified_count > 0:
+            # Re-fetch event to get updated count
+            updated_event = await db.events.find_one({"_id": ObjectId(event_id)})
+            if updated_event:
+                current_count = updated_event["room"]["current_participants"]
+                peak = updated_event["metadata"]["peak_participants"]
+                if current_count > peak:
+                    await db.events.update_one(
+                        {"_id": ObjectId(event_id)},
+                        {"$set": {"metadata.peak_participants": current_count}}
+                    )
+
+            # Update user stats only if participant was actually added
+            await db.users.update_one(
+                {"_id": ObjectId(user_id)},
+                {"$inc": {"stats.events_attended": 1}}
+            )
 
     # Generate Daily.co meeting token
     daily_service = DailyService()
