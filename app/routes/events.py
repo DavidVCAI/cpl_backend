@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 import logging
 
@@ -55,10 +55,10 @@ async def create_event(event_data: EventCreate):
             "total_minutes": 0,
             "peak_participants": 0
         },
-        "starts_at": datetime.now(),
+        "starts_at": datetime.now(timezone.utc),
         "ends_at": None,
-        "created_at": datetime.now(),
-        "updated_at": datetime.now()
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
     }
 
     result = await db.events.insert_one(event)
@@ -171,14 +171,14 @@ async def join_event(event_id: str, user_id: str):
                 "$push": {
                     "participants": {
                         "user_id": user_id,
-                        "joined_at": datetime.now(),
+                        "joined_at": datetime.now(timezone.utc),
                         "is_active": True
                     }
                 },
                 "$set": {
                     "room.current_participants": new_count,
                     "metadata.peak_participants": max(new_count, event["metadata"]["peak_participants"]),
-                    "updated_at": datetime.now()
+                    "updated_at": datetime.now(timezone.utc)
                 },
                 "$inc": {
                     "metadata.views": 1
@@ -242,8 +242,13 @@ async def end_event(event_id: str, creator_id: str):
             # Continue even if room deletion fails
 
     # Calculate total duration in minutes
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     starts_at = event.get("starts_at", now)
+
+    # Make starts_at timezone-aware if it isn't
+    if starts_at.tzinfo is None:
+        starts_at = starts_at.replace(tzinfo=timezone.utc)
+
     duration_minutes = int((now - starts_at).total_seconds() / 60)
 
     # Update event status
