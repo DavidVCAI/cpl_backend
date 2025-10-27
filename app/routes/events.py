@@ -79,7 +79,7 @@ async def create_event(event_data: EventCreate):
 
 
 @router.get("/nearby", response_model=list)
-async def get_nearby_events(lng: float, lat: float, max_distance: int = 5000):
+async def get_nearby_events(lng: float, lat: float, max_distance: int = 5000, status: str = None):
     """
     Get events near a location (uses MongoDB geospatial query)
 
@@ -87,10 +87,12 @@ async def get_nearby_events(lng: float, lat: float, max_distance: int = 5000):
         lng: Longitude
         lat: Latitude
         max_distance: Maximum distance in meters (default 5km)
+        status: Filter by status (active, ended, cancelled) - optional, returns all if not provided
     """
     db = await get_database()
 
-    events = await db.events.find({
+    # Build query filter
+    query_filter = {
         "location": {
             "$near": {
                 "$geometry": {
@@ -99,9 +101,14 @@ async def get_nearby_events(lng: float, lat: float, max_distance: int = 5000):
                 },
                 "$maxDistance": max_distance
             }
-        },
-        "status": "active"
-    }).to_list(20)
+        }
+    }
+
+    # Add status filter if provided
+    if status:
+        query_filter["status"] = status
+
+    events = await db.events.find(query_filter).to_list(100)
 
     # Convert ObjectId to string and map _id to id
     for event in events:
@@ -149,6 +156,41 @@ async def join_event(event_id: str, user_id: str):
         raise HTTPException(status_code=404, detail="Event not found")
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if user already joined
+    already_joined = any(p["user_id"] == user_id for p in event.get("participants", []))
+
+    if not already_joined:
+        # Add participant to event
+        current_count = event["room"]["current_participants"]
+        new_count = current_count + 1
+
+        await db.events.update_one(
+            {"_id": ObjectId(event_id)},
+            {
+                "$push": {
+                    "participants": {
+                        "user_id": user_id,
+                        "joined_at": datetime.now(),
+                        "is_active": True
+                    }
+                },
+                "$set": {
+                    "room.current_participants": new_count,
+                    "metadata.peak_participants": max(new_count, event["metadata"]["peak_participants"]),
+                    "updated_at": datetime.now()
+                },
+                "$inc": {
+                    "metadata.views": 1
+                }
+            }
+        )
+
+        # Update user stats
+        await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$inc": {"stats.events_attended": 1}}
+        )
 
     # Generate Daily.co meeting token
     daily_service = DailyService()
@@ -199,14 +241,20 @@ async def end_event(event_id: str, creator_id: str):
             logger.warning(f"⚠️ Failed to delete Daily.co room {room_name}: {str(e)}")
             # Continue even if room deletion fails
 
+    # Calculate total duration in minutes
+    now = datetime.now()
+    starts_at = event.get("starts_at", now)
+    duration_minutes = int((now - starts_at).total_seconds() / 60)
+
     # Update event status
     await db.events.update_one(
         {"_id": ObjectId(event_id)},
         {
             "$set": {
                 "status": "ended",
-                "ends_at": datetime.now(),
-                "updated_at": datetime.now()
+                "ends_at": now,
+                "updated_at": now,
+                "metadata.total_minutes": duration_minutes
             }
         }
     )
