@@ -91,14 +91,34 @@ async def login_user(user_data: UserCreate):
     }
 
 
+def convert_objectids_to_strings(obj):
+    """Recursively convert all ObjectIds to strings in a dict/list"""
+    if isinstance(obj, ObjectId):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_objectids_to_strings(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_objectids_to_strings(item) for item in obj]
+    else:
+        return obj
+
 @router.get("/{user_id}/collectibles", response_model=list)
 async def get_user_collectibles(user_id: str):
     """Get all collectibles owned by user"""
-    db = await get_database()
+    try:
+        db = await get_database()
 
-    from app.services.collectible_service import CollectibleService
-    collectible_service = CollectibleService(db)
+        from app.services.collectible_service import CollectibleService
+        collectible_service = CollectibleService(db)
 
-    inventory = await collectible_service.get_user_inventory(user_id)
+        inventory = await collectible_service.get_user_inventory(user_id)
 
-    return inventory
+        # Convert ALL ObjectIds to strings recursively
+        inventory = convert_objectids_to_strings(inventory)
+
+        return inventory
+    except Exception as e:
+        print(f"❌ Error in get_user_collectibles endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching collectibles: {str(e)}")
