@@ -14,10 +14,10 @@ class CollectibleService:
         self.user_collectibles = db.user_collectibles
 
     async def create_collectible(
-        self,
-        event_id: str,
-        rarity: str = "common",
-        drop_location: list[float] = None
+            self,
+            event_id: str,
+            rarity: str = "common",
+            drop_location: list[float] = None
     ) -> Dict:
         """
         Create a new collectible for an event
@@ -69,9 +69,9 @@ class CollectibleService:
         return collectible
 
     async def claim_collectible(
-        self,
-        collectible_id: str,
-        user_id: str
+            self,
+            collectible_id: str,
+            user_id: str
     ) -> Dict:
         """
         Attempt to claim a collectible (RACE CONDITION SAFE!)
@@ -101,8 +101,8 @@ class CollectibleService:
             result = await self.collectibles.find_one_and_update(
                 filter={
                     "_id": coll_oid,
-                    "claimed_by": None,        # MUST be unclaimed
-                    "is_active": True,         # MUST be active
+                    "claimed_by": None,  # MUST be unclaimed
+                    "is_active": True,  # MUST be active
                     "expires_at": {"$gt": datetime.now()}  # NOT expired
                 },
                 update={
@@ -177,13 +177,14 @@ class CollectibleService:
         # Random rarity based on probability
         rand = random.random()
         if rand < 0.5:
-            rarity = "common"     # 50%
+            rarity = "common"  # 50%
         elif rand < 0.8:
-            rarity = "rare"       # 30%
+            rarity = "rare"  # 30%
         elif rand < 0.95:
-            rarity = "epic"       # 15%
+            rarity = "epic"  # 15%
         else:
             rarity = "legendary"  # 5%
+
 
         collectible = await self.create_collectible(event_id, rarity, location)
 
