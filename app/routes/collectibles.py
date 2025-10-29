@@ -21,9 +21,30 @@ async def claim_collectible(collectible_id: str, user_id: str):
     """
     Attempt to claim a collectible (handles race condition)
     """
+    from app.websockets.manager import ConnectionManager
+    from app.main import manager
+    from datetime import datetime
+
     db = await get_database()
     collectible_service = CollectibleService(db)
     result = await collectible_service.claim_collectible(collectible_id, user_id)
+
+    # Broadcast to event participants if successful
+    if result.get("success"):
+        event_id = result.get("collectible", {}).get("event_id")
+        if event_id:
+            # Get user name for notification
+            user = await db.users.find_one({"_id": ObjectId(user_id)})
+            winner_name = user.get("name", "Otro usuario") if user else "Otro usuario"
+
+            await manager.broadcast_to_event(event_id, {
+                "type": "collectible_claimed",
+                "collectible_id": collectible_id,
+                "winner_id": user_id,
+                "winner_name": winner_name,
+                "timestamp": datetime.now().isoformat()
+            })
+
     return fix_objectids(result)
 
 
@@ -52,6 +73,9 @@ async def generate_collectible(event_id: str):
     - Random name and image
     - Auto timestamps and expiration
     """
+    from app.main import manager
+    from datetime import datetime
+
     db = await get_database()
     collectible_service = CollectibleService(db)
 
@@ -60,5 +84,13 @@ async def generate_collectible(event_id: str):
         event_id=event_id,
         location=[-74.0817, 4.6097]
     )
+
+    # Broadcast to all event participants
+    await manager.broadcast_to_event(event_id, {
+        "type": "collectible_drop",
+        "collectible": collectible,
+        "expires_in": 30,
+        "timestamp": datetime.now().isoformat()
+    })
 
     return {"success": True, "collectible": collectible}

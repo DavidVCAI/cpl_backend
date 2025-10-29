@@ -394,14 +394,18 @@ async def handle_claim_collectible(user_id: str, data: dict):
         "timestamp": datetime.now().isoformat()
     })
 
-    # If successful, broadcast to all
+    # If successful, broadcast to event participants
     if result.get("success"):
-        await manager.broadcast({
-            "type": "collectible_claimed",
-            "collectible_id": collectible_id,
-            "winner_id": user_id,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Get the event_id from the collectible result
+        event_id = result.get("collectible", {}).get("event_id")
+        if event_id:
+            await manager.broadcast_to_event(event_id, {
+                "type": "collectible_claimed",
+                "collectible_id": collectible_id,
+                "winner_id": user_id,
+                "winner_name": result.get("winner_name", "Otro usuario"),
+                "timestamp": datetime.now().isoformat()
+            })
 
 
 # ========================================
