@@ -85,12 +85,20 @@ async def generate_collectible(event_id: str):
         location=[-74.0817, 4.6097]
     )
 
+    # Convert datetime objects to ISO strings for JSON serialization
+    collectible_broadcast = {
+        **collectible,
+        "dropped_at": collectible["dropped_at"].isoformat() if isinstance(collectible.get("dropped_at"), datetime) else collectible.get("dropped_at"),
+        "expires_at": collectible["expires_at"].isoformat() if isinstance(collectible.get("expires_at"), datetime) else collectible.get("expires_at"),
+        "created_at": collectible["created_at"].isoformat() if isinstance(collectible.get("created_at"), datetime) else collectible.get("created_at"),
+    }
+
     # Broadcast to all event participants
     await manager.broadcast_to_event(event_id, {
         "type": "collectible_drop",
-        "collectible": collectible,
+        "collectible": collectible_broadcast,
         "expires_in": 30,
         "timestamp": datetime.now().isoformat()
     })
 
-    return {"success": True, "collectible": collectible}
+    return {"success": True, "collectible": collectible_broadcast}
