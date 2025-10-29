@@ -45,11 +45,12 @@ class UserCollectible(BaseModel):
     """User collectible inventory"""
     id: Optional[str] = Field(alias="_id", default=None)
     user_id: str
-    collectible_id: str
+    collectible_id: str | ObjectId  # Accept both string and ObjectId
     claimed_at: datetime = Field(default_factory=datetime.now)
     claim_order: int = Field(..., description="Position in claim race (1st, 2nd, etc)")
     event_id: str
 
     class Config:
         populate_by_name = True
+        arbitrary_types_allowed = True  # Allow ObjectId type
         json_encoders = {ObjectId: str}

@@ -14,10 +14,10 @@ class CollectibleService:
         self.user_collectibles = db.user_collectibles
 
     async def create_collectible(
-        self,
-        event_id: str,
-        rarity: str = "common",
-        drop_location: list[float] = None
+            self,
+            event_id: str,
+            rarity: str = "common",
+            drop_location: list[float] = None
     ) -> Dict:
         """
         Create a new collectible for an event
@@ -69,9 +69,9 @@ class CollectibleService:
         return collectible
 
     async def claim_collectible(
-        self,
-        collectible_id: str,
-        user_id: str
+            self,
+            collectible_id: str,
+            user_id: str
     ) -> Dict:
         """
         Attempt to claim a collectible (RACE CONDITION SAFE!)
@@ -90,6 +90,8 @@ class CollectibleService:
         try:
             coll_oid = ObjectId(collectible_id)
 
+            print(f"🎯 Claim attempt - User: {user_id}, Collectible: {collectible_id}")
+
             # Increment attempt counter (for analytics)
             await self.collectibles.update_one(
                 {"_id": coll_oid},
@@ -101,8 +103,8 @@ class CollectibleService:
             result = await self.collectibles.find_one_and_update(
                 filter={
                     "_id": coll_oid,
-                    "claimed_by": None,        # MUST be unclaimed
-                    "is_active": True,         # MUST be active
+                    "claimed_by": None,  # MUST be unclaimed
+                    "is_active": True,  # MUST be active
                     "expires_at": {"$gt": datetime.now()}  # NOT expired
                 },
                 update={
@@ -123,37 +125,44 @@ class CollectibleService:
                 collectible = await self.collectibles.find_one({"_id": coll_oid})
 
                 if collectible and collectible["claimed_by"]:
+                    print(f"❌ Already claimed by: {collectible['claimed_by']}")
                     return {
                         "success": False,
                         "message": "Someone else claimed it first!",
                         "claimed_by": str(collectible["claimed_by"])
                     }
                 elif collectible and collectible["expires_at"] < datetime.now():
+                    print(f"⏰ Collectible expired at {collectible['expires_at']}")
                     return {
                         "success": False,
                         "message": "Collectible expired"
                     }
                 else:
+                    print(f"🚫 Collectible not available (might be inactive)")
                     return {
                         "success": False,
                         "message": "Collectible not available"
                     }
 
             # SUCCESS! You got it!
+            print(f"✅ Claim successful! User {user_id} got {result['name']} ({result['type']})")
+
             # Add to user's inventory
-            await self.user_collectibles.insert_one({
+            inventory_doc = await self.user_collectibles.insert_one({
                 "user_id": user_id,
-                "collectible_id": collectible_id,
+                "collectible_id": coll_oid,  # Store as ObjectId for $lookup to work
                 "claimed_at": datetime.now(),
                 "claim_order": result["metadata"]["successful_claims"],
                 "event_id": result["event_id"]
             })
+            print(f"📦 Added to user_collectibles with _id: {inventory_doc.inserted_id}")
 
             # Update user stats
             await self.db.users.update_one(
                 {"_id": ObjectId(user_id)},
                 {"$inc": {"stats.collectibles_count": 1}}
             )
+            print(f"📊 Updated user stats")
 
             return {
                 "success": True,
@@ -177,13 +186,14 @@ class CollectibleService:
         # Random rarity based on probability
         rand = random.random()
         if rand < 0.5:
-            rarity = "common"     # 50%
+            rarity = "common"  # 50%
         elif rand < 0.8:
-            rarity = "rare"       # 30%
+            rarity = "rare"  # 30%
         elif rand < 0.95:
-            rarity = "epic"       # 15%
+            rarity = "epic"  # 15%
         else:
             rarity = "legendary"  # 5%
+
 
         collectible = await self.create_collectible(event_id, rarity, location)
 
@@ -217,9 +227,17 @@ class CollectibleService:
                     "as": "collectible"
                 }
             },
-            {"$unwind": "$collectible"},
+            {"$unwind": {
+                "path": "$collectible",
+                "preserveNullAndEmptyArrays": False  # Skip if no match (don't fail)
+            }},
             {"$sort": {"claimed_at": -1}}
         ]
 
-        results = await self.user_collectibles.aggregate(pipeline).to_list(None)
-        return results
+        try:
+            results = await self.user_collectibles.aggregate(pipeline).to_list(None)
+            print(f"📦 Found {len(results)} collectibles for user {user_id}")
+            return results
+        except Exception as e:
+            print(f"❌ Error getting user inventory: {e}")
+            return []  # Return empty list on error instead of crashing
