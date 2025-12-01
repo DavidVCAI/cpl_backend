@@ -29,6 +29,7 @@ geopy
 
 # Validation
 pydantic
+email-validator
 
 # Background Tasks
 apscheduler
