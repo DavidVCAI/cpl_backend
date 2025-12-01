@@ -23,7 +23,7 @@ jobs:
       - name: Deploy to Backend Instance 1
         run: |
           aws ssm send-command \
-            --instance-ids "i-0d8dad7f2bdc38c4e" \
+            --instance-ids "i-0c97b6b7b0946687f" \
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=[
               "cd /home/ec2-user",
@@ -41,7 +41,7 @@ jobs:
       - name: Deploy to Backend Instance 2
         run: |
           aws ssm send-command \
-            --instance-ids "i-02e87e5d52830dfb6" \
+            --instance-ids "i-097aefed6a63a0bcf" \
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=[
               "cd /home/ec2-user",
