@@ -1,6 +1,6 @@
 from pymongo import ReturnDocument
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from bson import ObjectId
 import random
 
@@ -17,7 +17,7 @@ class CollectibleService:
             self,
             event_id: str,
             rarity: str = "common",
-            drop_location: list[float] = None
+            drop_location: List[float] = None
     ) -> Dict:
         """
         Create a new collectible for an event
@@ -178,7 +178,7 @@ class CollectibleService:
                 "message": f"Error: {str(e)}"
             }
 
-    async def drop_random_collectible(self, event_id: str, location: list[float]):
+    async def drop_random_collectible(self, event_id: str, location: List[float]):
         """
         Drop a random collectible in an event
         (Called by background task or event trigger)

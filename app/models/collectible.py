@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List, Union
 from datetime import datetime
 from bson import ObjectId
 
@@ -7,7 +7,7 @@ from bson import ObjectId
 class GeoLocation(BaseModel):
     """GeoJSON Point"""
     type: str = "Point"
-    coordinates: list[float]
+    coordinates: List[float]
 
 
 class CollectibleMetadata(BaseModel):
@@ -45,7 +45,7 @@ class UserCollectible(BaseModel):
     """User collectible inventory"""
     id: Optional[str] = Field(alias="_id", default=None)
     user_id: str
-    collectible_id: str | ObjectId  # Accept both string and ObjectId
+    collectible_id: Union[str, ObjectId]  # Accept both string and ObjectId
     claimed_at: datetime = Field(default_factory=datetime.now)
     claim_order: int = Field(..., description="Position in claim race (1st, 2nd, etc)")
     event_id: str

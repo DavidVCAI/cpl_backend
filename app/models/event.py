@@ -7,7 +7,7 @@ from bson import ObjectId
 class GeoLocation(BaseModel):
     """GeoJSON Point"""
     type: str = "Point"
-    coordinates: list[float] = Field(..., description="[longitude, latitude]")
+    coordinates: List[float] = Field(..., description="[longitude, latitude]")
     address: Optional[str] = None
     city: str = "Bogotá"
 
@@ -65,7 +65,7 @@ class EventCreate(BaseModel):
     description: str
     category: str
     creator_id: str
-    coordinates: list[float] = Field(..., description="[longitude, latitude]")
+    coordinates: List[float] = Field(..., description="[longitude, latitude]")
     address: Optional[str] = None
 
 

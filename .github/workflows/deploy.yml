@@ -20,6 +20,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-2
 
+      - name: Store MongoDB URL in SSM Parameter Store
+        run: |
+          aws ssm put-parameter \
+            --name "/citypulse/mongodb-url" \
+            --value "${{ secrets.MONGODB_URL }}" \
+            --type "SecureString" \
+            --overwrite
+
       - name: Deploy to Backend Instance 1
         run: |
           aws ssm send-command \
@@ -28,6 +36,9 @@ jobs:
             --parameters 'commands=[
               "cd /home/ec2-user",
               "if [ -d cpl_backend ]; then cd cpl_backend && git pull; else git clone https://github.com/DavidVCAI/cpl_backend.git && cd cpl_backend; fi",
+              "MONGODB_URL=$(aws ssm get-parameter --name /citypulse/mongodb-url --with-decryption --query Parameter.Value --output text --region us-east-2)",
+              "echo MONGODB_URL=$MONGODB_URL > .env",
+              "echo CORS_ORIGINS=http://18.118.131.101,http://localhost:5173 >> .env",
               "python3 -m venv venv",
               "source venv/bin/activate",
               "pip install -r requirements.txt",
@@ -46,6 +57,9 @@ jobs:
             --parameters 'commands=[
               "cd /home/ec2-user",
               "if [ -d cpl_backend ]; then cd cpl_backend && git pull; else git clone https://github.com/DavidVCAI/cpl_backend.git && cd cpl_backend; fi",
+              "MONGODB_URL=$(aws ssm get-parameter --name /citypulse/mongodb-url --with-decryption --query Parameter.Value --output text --region us-east-2)",
+              "echo MONGODB_URL=$MONGODB_URL > .env",
+              "echo CORS_ORIGINS=http://18.118.131.101,http://localhost:5173 >> .env",
               "python3 -m venv venv",
               "source venv/bin/activate",
               "pip install -r requirements.txt",

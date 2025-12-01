@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
 
@@ -19,7 +19,7 @@ class PyObjectId(ObjectId):
 class GeoLocation(BaseModel):
     """GeoJSON Point for MongoDB geospatial queries"""
     type: str = "Point"
-    coordinates: list[float] = Field(..., description="[longitude, latitude]")
+    coordinates: List[float] = Field(..., description="[longitude, latitude]")
 
 
 class UserStats(BaseModel):
