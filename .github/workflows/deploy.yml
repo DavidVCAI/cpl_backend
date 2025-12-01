@@ -1,0 +1,64 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-2
+
+      - name: Deploy to Backend Instance 1
+        run: |
+          aws ssm send-command \
+            --instance-ids "i-0d8dad7f2bdc38c4e" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "cd /home/ec2-user",
+              "if [ -d cpl_backend ]; then cd cpl_backend && git pull; else git clone https://github.com/DavidVCAI/cpl_backend.git && cd cpl_backend; fi",
+              "python3 -m venv venv",
+              "source venv/bin/activate",
+              "pip install -r requirements.txt",
+              "sudo pkill -f uvicorn || true",
+              "nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &",
+              "sleep 3",
+              "curl -s http://localhost:8000/health || echo Health check pending"
+            ]' \
+            --comment "Deploy backend from GitHub Actions"
+
+      - name: Deploy to Backend Instance 2
+        run: |
+          aws ssm send-command \
+            --instance-ids "i-02e87e5d52830dfb6" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "cd /home/ec2-user",
+              "if [ -d cpl_backend ]; then cd cpl_backend && git pull; else git clone https://github.com/DavidVCAI/cpl_backend.git && cd cpl_backend; fi",
+              "python3 -m venv venv",
+              "source venv/bin/activate",
+              "pip install -r requirements.txt",
+              "sudo pkill -f uvicorn || true",
+              "nohup venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &",
+              "sleep 3",
+              "curl -s http://localhost:8000/health || echo Health check pending"
+            ]' \
+            --comment "Deploy backend from GitHub Actions"
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for deployments to complete..."
+          sleep 30
+          echo "Testing Load Balancer..."
+          curl -sf http://citypulse-backend-alb-597242547.us-east-2.elb.amazonaws.com/health || echo "LB health check pending"

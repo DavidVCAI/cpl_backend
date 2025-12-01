@@ -15,6 +15,12 @@ python-engineio
 # HTTP Client
 httpx
 
+# AWS SDK (Cognito Authentication)
+boto3
+
+# JWT Token Validation
+python-jose[cryptography]
+
 # Deepgram SDK (AI Transcription)
 deepgram-sdk
 

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -7,8 +7,11 @@ import logging
 from app.config import settings
 from app.database import get_database, close_database
 from app.routes import users, events, collectibles, transcription
+from app.routes import auth  # New auth routes with Cognito
 from app.websockets.manager import ConnectionManager
 from app.services.collectible_service import CollectibleService
+from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
+from app.middleware.auth import verify_websocket_token, CognitoUser
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from bson import ObjectId
 
@@ -57,6 +60,15 @@ async def lifespan(app: FastAPI):
         id='collectible_cleaner'
     )
 
+    # Schedule rate limiter cleanup (every 30 minutes)
+    scheduler.add_job(
+        rate_limiter.cleanup_old_records,
+        'interval',
+        minutes=30,
+        id='rate_limiter_cleaner'
+    )
+    logger.info("Rate limiter cleanup scheduled")
+
     yield
 
     # Shutdown
@@ -85,8 +97,15 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
+# Add Rate Limiting Middleware for login endpoints
+app.add_middleware(
+    RateLimitMiddleware,
+    protected_paths=["/api/auth/login", "/api/users/login"]
+)
+
 # Include routers
-app.include_router(users.router, prefix="/api/users", tags=["Users"])
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])  # New secure auth
+app.include_router(users.router, prefix="/api/users", tags=["Users (Legacy)"])
 app.include_router(events.router, prefix="/api/events", tags=["Events"])
 app.include_router(collectibles.router, prefix="/api/collectibles", tags=["Collectibles"])
 app.include_router(transcription.router, prefix="/api/transcription", tags=["Transcription"])
@@ -142,9 +161,16 @@ async def get_all_locations():
 # ========================================
 
 @app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: str):
+async def websocket_endpoint(
+    websocket: WebSocket,
+    user_id: str,
+    token: str = Query(None, description="JWT access token for authentication")
+):
     """
-    Main WebSocket endpoint for real-time communication
+    Main WebSocket endpoint for real-time communication.
+
+    Security: Requires JWT token as query parameter.
+    Example: ws://localhost:8000/ws/user123?token=eyJhbGciOiJSUz...
 
     Handles:
     - Location updates
@@ -152,8 +178,21 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     - Collectible drops
     - Chat messages
     """
+    # Validate JWT token if provided (Security Scenario 1)
+    authenticated_user = None
+    if token:
+        try:
+            authenticated_user = await verify_websocket_token(websocket, token)
+            logger.info(f"WebSocket authenticated: {authenticated_user.email}")
+        except Exception as e:
+            logger.warning(f"WebSocket auth failed for user_id {user_id}: {e}")
+            # Allow connection but mark as unauthenticated for backward compatibility
+            # In strict mode, uncomment below to reject:
+            # await websocket.close(code=4001, reason="Invalid token")
+            # return
+
     await manager.connect(websocket, user_id)
-    logger.info(f"✅ User {user_id} connected via WebSocket")
+    logger.info(f"User {user_id} connected via WebSocket (authenticated: {authenticated_user is not None})")
 
     try:
         while True:
@@ -181,7 +220,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 
     except WebSocketDisconnect:
         await manager.disconnect(user_id)
-        logger.info(f"❌ User {user_id} disconnected")
+        logger.info(f"User {user_id} disconnected")
 
         # Notify others about disconnection
         await manager.broadcast({

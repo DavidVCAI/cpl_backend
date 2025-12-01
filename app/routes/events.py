@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException
-from typing import List
+from fastapi import APIRouter, HTTPException, Depends
+from typing import List, Optional
 from datetime import datetime, timezone
 from bson import ObjectId
 import logging
@@ -7,18 +7,37 @@ import logging
 from app.database import get_database
 from app.models.event import EventCreate, Event
 from app.services.daily_service import DailyService
+from app.middleware.auth import get_current_user, CognitoUser, get_current_user_optional
+from app.middleware.room_authorization import (
+    authorize_room_join,
+    authorize_room_action,
+    RoomPermission,
+    get_user_room_role
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=dict, status_code=201)
-async def create_event(event_data: EventCreate):
+async def create_event(
+    event_data: EventCreate,
+    current_user: CognitoUser = Depends(get_current_user)
+):
     """
-    Create a new event with Daily.co video room
+    Create a new event with Daily.co video room.
+
+    Requires JWT authentication.
     """
     db = await get_database()
     daily_service = DailyService()
+
+    # Get MongoDB user by Cognito sub
+    mongo_user = await db.users.find_one({"cognito_sub": current_user.sub})
+    if not mongo_user:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
+    creator_id = str(mongo_user["_id"])
 
     # Create Daily.co room
     room_name = f"citypulse-{ObjectId()}"
@@ -33,7 +52,8 @@ async def create_event(event_data: EventCreate):
         "title": event_data.title,
         "description": event_data.description,
         "category": event_data.category,
-        "creator_id": event_data.creator_id,
+        "creator_id": mongo_user["_id"],  # Use MongoDB ObjectId
+        "creator_cognito_sub": current_user.sub,  # Store Cognito sub for reference
         "location": {
             "type": "Point",
             "coordinates": event_data.coordinates,
@@ -41,6 +61,10 @@ async def create_event(event_data: EventCreate):
             "city": "Bogotá"
         },
         "status": "active",
+        "is_private": event_data.is_private if hasattr(event_data, 'is_private') else False,
+        "moderators": [],  # For room authorization
+        "banned_users": [],  # For room authorization
+        "invited_users": [],  # For private events
         "room": {
             "daily_room_name": room_info["room_name"],
             "daily_room_url": room_info["room_url"],
@@ -66,9 +90,11 @@ async def create_event(event_data: EventCreate):
 
     # Update user stats
     await db.users.update_one(
-        {"_id": ObjectId(event_data.creator_id)},
+        {"_id": mongo_user["_id"]},
         {"$inc": {"stats.events_created": 1}}
     )
+
+    logger.info(f"Event created: {result.inserted_id} by user {current_user.email}")
 
     return {
         "id": str(result.inserted_id),
@@ -140,44 +166,77 @@ async def get_event(event_id: str):
 
 
 @router.post("/{event_id}/join", response_model=dict)
-async def join_event(event_id: str, user_id: str):
+async def join_event(
+    event_id: str,
+    current_user: CognitoUser = Depends(get_current_user)
+):
     """
-    Join an event and get Daily.co meeting token
+    Join an event and get Daily.co meeting token.
+
+    Security Scenario 2: Authorization for Video Room Access
+    - Requires JWT authentication (validated by get_current_user)
+    - Checks user is authorized to join this room (ACL/roles)
+    - Returns 403 if not authorized
+    - Target: 100% requests validated, decision < 150ms
     """
     db = await get_database()
 
+    # Get MongoDB user by Cognito sub
+    user = await db.users.find_one({"cognito_sub": current_user.sub})
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
+    user_id = str(user["_id"])
+
     try:
         event = await db.events.find_one({"_id": ObjectId(event_id)})
-        user = await db.users.find_one({"_id": ObjectId(user_id)})
     except:
-        raise HTTPException(status_code=400, detail="Invalid ID")
+        raise HTTPException(status_code=400, detail="Invalid event ID")
 
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+
+    if event.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Event is not active")
+
+    # Room Authorization Check (Scenario 2)
+    role = await get_user_room_role(user_id, event_id, db)
+
+    if role is None:
+        logger.warning(f"Unauthorized room access: user={user_id}, event={event_id}")
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to join this room"
+        )
+
+    if role.value == "banned":
+        raise HTTPException(
+            status_code=403,
+            detail="You have been banned from this event"
+        )
 
     # Check if user already joined (defensive check)
     participants_list = event.get("participants", [])
     participant_ids = [p.get("user_id") for p in participants_list]
     already_joined = user_id in participant_ids
 
-    logger.info(f"🎫 Join attempt - User: {user_id}, Event: {event_id}, Already joined: {already_joined}, Participant IDs: {participant_ids}")
+    logger.info(f"Join attempt - User: {user_id}, Event: {event_id}, Role: {role.value}, Already joined: {already_joined}")
 
     if not already_joined:
         # Atomic operation with filter to prevent duplicates
-        # Only update if user_id is NOT already in participants array
         result = await db.events.update_one(
             {
                 "_id": ObjectId(event_id),
-                "participants.user_id": {"$ne": user_id}  # Filter: user NOT in array
+                "participants.user_id": {"$ne": user_id}
             },
             {
                 "$push": {
                     "participants": {
                         "user_id": user_id,
+                        "cognito_sub": current_user.sub,
                         "joined_at": datetime.now(timezone.utc),
-                        "is_active": True
+                        "is_active": True,
+                        "role": role.value
                     }
                 },
                 "$inc": {
@@ -190,9 +249,8 @@ async def join_event(event_id: str, user_id: str):
             }
         )
 
-        logger.info(f"✅ Join result - Modified: {result.modified_count}, Matched: {result.matched_count}")
+        logger.info(f"Join result - Modified: {result.modified_count}")
 
-        # Only proceed if participant was actually added
         if result.modified_count > 0:
             # Update peak_participants
             updated_event = await db.events.find_one({"_id": ObjectId(event_id)})
@@ -207,23 +265,20 @@ async def join_event(event_id: str, user_id: str):
 
             # Update user stats
             await db.users.update_one(
-                {"_id": ObjectId(user_id)},
+                {"_id": user["_id"]},
                 {"$inc": {"stats.events_attended": 1}}
             )
-        else:
-            logger.warning(f"⚠️ Duplicate join prevented for user {user_id} in event {event_id}")
-    else:
-        logger.warning(f"⚠️ User {user_id} already in event {event_id}, returning existing token")
 
     # Generate Daily.co meeting token
     daily_service = DailyService()
+    is_owner = str(event.get("creator_id")) == user_id
 
     try:
         token = await daily_service.create_meeting_token(
             room_name=event["room"]["daily_room_name"],
             user_id=user_id,
             username=user["name"],
-            is_owner=(str(event["creator_id"]) == user_id)
+            is_owner=is_owner
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create meeting token: {str(e)}")
@@ -232,14 +287,29 @@ async def join_event(event_id: str, user_id: str):
         "event_id": event_id,
         "room_url": event["room"]["daily_room_url"],
         "token": token,
-        "is_owner": (str(event["creator_id"]) == user_id)
+        "is_owner": is_owner,
+        "role": role.value
     }
 
 
 @router.post("/{event_id}/end", response_model=dict)
-async def end_event(event_id: str, creator_id: str):
-    """End an event and delete the Daily.co room"""
+async def end_event(
+    event_id: str,
+    current_user: CognitoUser = Depends(get_current_user)
+):
+    """
+    End an event and delete the Daily.co room.
+
+    Requires JWT authentication and END_EVENT permission (creator only).
+    """
     db = await get_database()
+
+    # Get MongoDB user
+    user = await db.users.find_one({"cognito_sub": current_user.sub})
+    if not user:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
+    user_id = str(user["_id"])
 
     try:
         event = await db.events.find_one({"_id": ObjectId(event_id)})
@@ -249,8 +319,12 @@ async def end_event(event_id: str, creator_id: str):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    if str(event["creator_id"]) != creator_id:
-        raise HTTPException(status_code=403, detail="Only the creator can end the event")
+    # Authorization: Only creator can end event
+    if not await authorize_room_action(event_id, RoomPermission.END_EVENT, current_user):
+        # Double-check with direct comparison
+        if str(event["creator_id"]) != user_id:
+            logger.warning(f"Unauthorized end event attempt: user={user_id}, event={event_id}")
+            raise HTTPException(status_code=403, detail="Only the creator can end the event")
 
     # Delete Daily.co room to save resources
     daily_service = DailyService()
@@ -259,16 +333,14 @@ async def end_event(event_id: str, creator_id: str):
     if room_name:
         try:
             await daily_service.delete_room(room_name)
-            logger.info(f"✅ Deleted Daily.co room: {room_name}")
+            logger.info(f"Deleted Daily.co room: {room_name}")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to delete Daily.co room {room_name}: {str(e)}")
-            # Continue even if room deletion fails
+            logger.warning(f"Failed to delete Daily.co room {room_name}: {str(e)}")
 
     # Calculate total duration in minutes
     now = datetime.now(timezone.utc)
     starts_at = event.get("starts_at", now)
 
-    # Make starts_at timezone-aware if it isn't
     if starts_at.tzinfo is None:
         starts_at = starts_at.replace(tzinfo=timezone.utc)
 
@@ -286,5 +358,7 @@ async def end_event(event_id: str, creator_id: str):
             }
         }
     )
+
+    logger.info(f"Event ended: {event_id} by user {current_user.email}")
 
     return {"message": "Event ended successfully"}

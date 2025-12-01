@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     MONGODB_URL: str
     DATABASE_NAME: str = "citypulse_live"
 
+    # AWS Cognito Configuration
+    AWS_REGION: str = "us-east-2"
+    COGNITO_USER_POOL_ID: str = "us-east-2_iwKIqXJ1E"
+    COGNITO_CLIENT_ID: str = "1evngaudtn03ef7pikqt9maeut"
+
     # Daily.co
     DAILY_API_KEY: Optional[str] = None
     DAILY_DOMAIN: Optional[str] = None
@@ -33,6 +38,10 @@ class Settings(BaseSettings):
 
     # Feature Flags
     ENABLE_TRANSCRIPTION: bool = True
+
+    # Rate Limiting Configuration
+    RATE_LIMIT_MAX_ATTEMPTS: int = 5  # Max failed attempts per minute
+    RATE_LIMIT_BLOCK_DURATION: int = 900  # 15 minutes in seconds
 
     class Config:
         env_file = ".env"
