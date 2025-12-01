@@ -27,9 +27,6 @@ deepgram-sdk
 # Geospatial
 geopy
 
-# CORS
-fastapi-cors
-
 # Validation
 pydantic
 
