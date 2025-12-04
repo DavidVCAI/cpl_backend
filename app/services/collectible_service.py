@@ -43,7 +43,7 @@ class CollectibleService:
             "name": config["name"],
             "type": rarity,
             "rarity_score": config["score"],
-            "image_url": f"/collectibles/{rarity}.png",
+            "image_url": f"/collectibles/{rarity}.svg",
             "description": f"Limited edition {rarity} collectible",
             "event_id": event_id,
             "dropped_at": datetime.now(),
