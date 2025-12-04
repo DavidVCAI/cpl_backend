@@ -125,11 +125,10 @@ async def root():
 # Health check
 @app.get("/health")
 async def health_check():
-    import os
     return {
         "status": "healthy",
         "database": "connected",
-        "instance_id": os.getenv("INSTANCE_ID", "unknown"),
+        "instance_id": settings.INSTANCE_ID,
         "websocket_stats": await manager.get_stats(),
         "timestamp": datetime.now().isoformat()
     }

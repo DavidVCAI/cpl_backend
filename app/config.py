@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    INSTANCE_ID: str = "unknown"  # For load balancer identification
 
     # MongoDB
     MONGODB_URL: str
