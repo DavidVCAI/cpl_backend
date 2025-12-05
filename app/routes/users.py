@@ -5,8 +5,45 @@ from bson import ObjectId
 
 from app.database import get_database
 from app.models.user import UserCreate, UserResponse, User
+from app.middleware.auth import get_current_user, CognitoUser
 
 router = APIRouter()
+
+
+@router.get("/me", response_model=dict)
+async def get_current_user_profile(current_user: CognitoUser = Depends(get_current_user)):
+    """
+    Get current authenticated user's profile.
+    This endpoint validates the JWT token and returns user info.
+    Used for security demo - Scenario 1: JWT Authentication.
+    """
+    db = await get_database()
+
+    # Try to find user by cognito_id (sub) first
+    user = await db.users.find_one({"cognito_id": current_user.sub})
+
+    if user:
+        return {
+            "id": str(user["_id"]),
+            "cognito_id": current_user.sub,
+            "email": current_user.email,
+            "name": user.get("name", current_user.email),
+            "stats": user.get("stats", {}),
+            "created_at": user.get("created_at"),
+            "message": "User found in database",
+            "jwt_validated": True
+        }
+    else:
+        # User authenticated via Cognito but not in MongoDB
+        # This is still a successful JWT validation!
+        return {
+            "cognito_id": current_user.sub,
+            "email": current_user.email,
+            "email_verified": current_user.email_verified,
+            "message": "JWT validated successfully - User authenticated via Cognito",
+            "jwt_validated": True,
+            "note": "User exists in Cognito but profile not yet created in database"
+        }
 
 
 @router.post("/register", response_model=dict, status_code=201)
